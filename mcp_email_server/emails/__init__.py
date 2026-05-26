@@ -47,7 +47,9 @@ class EmailHandler(abc.ABC):
         """
 
     @abc.abstractmethod
-    async def get_emails_content(self, email_ids: list[str], mailbox: str = "INBOX") -> "EmailContentBatchResponse":
+    async def get_emails_content(
+        self, email_ids: list[str], mailbox: str = "INBOX", mark_as_read: bool = False
+    ) -> "EmailContentBatchResponse":
         """
         Get full content (including body) of multiple emails by their email IDs (IMAP UIDs)
         """
@@ -84,6 +86,12 @@ class EmailHandler(abc.ABC):
     async def delete_emails(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
         """
         Delete emails by their IDs. Returns (deleted_ids, failed_ids)
+        """
+
+    @abc.abstractmethod
+    async def mark_emails_as_read(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
+        """
+        Mark emails as read by their IDs. Returns (marked_ids, failed_ids)
         """
 
     @abc.abstractmethod

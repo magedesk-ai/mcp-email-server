@@ -113,9 +113,16 @@ async def get_emails_content(
         ),
     ],
     mailbox: Annotated[str, Field(default="INBOX", description="The mailbox to retrieve emails from.")] = "INBOX",
+    mark_as_read: Annotated[
+        bool,
+        Field(
+            default=False,
+            description="If True, mark each successfully retrieved email as read. If marking fails, a warning is logged and retrieval still succeeds.",
+        ),
+    ] = False,
 ) -> EmailContentBatchResponse:
     handler = dispatch_handler(account_name)
-    return await handler.get_emails_content(email_ids, mailbox)
+    return await handler.get_emails_content(email_ids, mailbox, mark_as_read)
 
 
 @mcp.tool(
@@ -194,6 +201,26 @@ async def delete_emails(
     result = f"Successfully deleted {len(deleted_ids)} email(s)"
     if failed_ids:
         result += f", failed to delete {len(failed_ids)} email(s): {', '.join(failed_ids)}"
+    return result
+
+
+@mcp.tool(
+    description="Mark one or more emails as read by their email_id. Use list_emails_metadata first to get the email_id."
+)
+async def mark_emails_as_read(
+    account_name: Annotated[str, Field(description="The name of the email account.")],
+    email_ids: Annotated[
+        list[str],
+        Field(description="List of email_id to mark as read (obtained from list_emails_metadata)."),
+    ],
+    mailbox: Annotated[str, Field(default="INBOX", description="The mailbox containing the emails.")] = "INBOX",
+) -> str:
+    handler = dispatch_handler(account_name)
+    marked_ids, failed_ids = await handler.mark_emails_as_read(email_ids, mailbox)
+
+    result = f"Successfully marked {len(marked_ids)} email(s) as read"
+    if failed_ids:
+        result += f", failed to mark {len(failed_ids)} email(s): {', '.join(failed_ids)}"
     return result
 
 

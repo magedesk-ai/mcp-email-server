@@ -628,12 +628,14 @@ class EmailClient:
         return None
 
     async def _fetch_email_with_formats(self, imap, email_id: str) -> list | None:
-        """Try different fetch formats to get email data."""
-        fetch_formats = ["RFC822", "BODY[]", "BODY.PEEK[]", "(BODY.PEEK[])"]
+        """Try non-mutating fetch formats to get email data."""
+        fetch_formats = ["BODY.PEEK[]", "(BODY.PEEK[])"]
 
         for fetch_format in fetch_formats:
             try:
-                _, data = await imap.uid("fetch", email_id, fetch_format)
+                response = await imap.uid("fetch", email_id, fetch_format)
+                _raise_for_imap_error(response, f"FETCH email {email_id} with {fetch_format}")
+                _, data = response
 
                 if data and len(data) > 0 and self._check_email_content(data):
                     return data
@@ -643,19 +645,22 @@ class EmailClient:
 
         return None
 
-    async def get_email_body_by_id(self, email_id: str, mailbox: str = "INBOX") -> dict[str, Any] | None:
+    async def get_email_body_by_id(
+        self, email_id: str, mailbox: str = "INBOX", mark_as_read: bool = False
+    ) -> dict[str, Any] | None:
         imap = self._imap_connect()
         try:
             # Wait for the connection to be established
             await imap._client_task
             await imap.wait_hello_from_server()
 
-            # Login and select inbox
+            # Login and select mailbox
             await imap.login(self.email_server.user_name, self.email_server.password.get_secret_value())
             await _send_imap_id(imap)
-            await imap.select(_quote_mailbox(mailbox))
+            select_response = await imap.select(_quote_mailbox(mailbox))
+            _raise_for_imap_error(select_response, f"SELECT mailbox {mailbox}")
 
-            # Fetch the specific email by UID
+            # Fetch the specific email by UID without implicitly marking it as read
             data = await self._fetch_email_with_formats(imap, email_id)
             if not data:
                 logger.error(f"Failed to fetch UID {email_id} with any format")
@@ -669,10 +674,19 @@ class EmailClient:
 
             # Parse the email
             try:
-                return self._parse_email_data(raw_email, email_id)
+                email_data = self._parse_email_data(raw_email, email_id)
             except Exception as e:
                 logger.error(f"Error parsing email: {e!s}")
                 return None
+
+            if mark_as_read:
+                try:
+                    store_response = await imap.uid("store", email_id, "+FLAGS", r"(\Seen)")
+                    _raise_for_imap_error(store_response, f"STORE \\Seen for email {email_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to mark email {email_id} as read: {e}")
+
+            return email_data
 
         finally:
             # Ensure we logout properly
@@ -1042,6 +1056,36 @@ class EmailClient:
 
         return deleted_ids, failed_ids
 
+    async def mark_emails_as_read(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
+        """Mark emails as read by setting the \\Seen flag. Returns (marked_ids, failed_ids)."""
+        imap = self._imap_connect()
+        marked_ids: list[str] = []
+        failed_ids: list[str] = []
+
+        try:
+            await imap._client_task
+            await imap.wait_hello_from_server()
+            await imap.login(self.email_server.user_name, self.email_server.password.get_secret_value())
+            await _send_imap_id(imap)
+            select_response = await imap.select(_quote_mailbox(mailbox))
+            _raise_for_imap_error(select_response, f"SELECT mailbox {mailbox}")
+
+            for email_id in email_ids:
+                try:
+                    store_response = await imap.uid("store", email_id, "+FLAGS", r"(\Seen)")
+                    _raise_for_imap_error(store_response, f"STORE \\Seen for email {email_id}")
+                    marked_ids.append(email_id)
+                except Exception as e:
+                    logger.error(f"Failed to mark email {email_id} as read: {e}")
+                    failed_ids.append(email_id)
+        finally:
+            try:
+                await imap.logout()
+            except Exception as e:
+                logger.info(f"Error during logout: {e}")
+
+        return marked_ids, failed_ids
+
     async def move_emails(
         self, email_ids: list[str], source_mailbox: str, destination_mailbox: str
     ) -> tuple[list[str], list[str]]:
@@ -1112,18 +1156,15 @@ class EmailClient:
                 if item == b"":
                     continue
                 item_str = item.decode("utf-8") if isinstance(item, bytes) else str(item)
-                # IMAP LIST response format: (\Flag1 \Flag2) "delimiter" "name"
-                # Parse flags from parentheses
                 flags = []
                 if "(" in item_str and ")" in item_str:
                     flags_str = item_str[item_str.index("(") + 1 : item_str.index(")")]
                     flags = [f.strip() for f in flags_str.split() if f.strip()]
 
-                # Parse delimiter and name from quoted parts
                 parts = item_str.split('"')
                 if len(parts) >= 3:
-                    delimiter = parts[1]  # First quoted string is delimiter
-                    folder_name = parts[-2]  # Last quoted string is name
+                    delimiter = parts[1]
+                    folder_name = parts[-2]
                     mailboxes.append(MailboxInfo(name=folder_name, delimiter=delimiter, flags=flags))
         finally:
             try:
@@ -1197,14 +1238,16 @@ class ClassicEmailHandler(EmailHandler):
             total=total,
         )
 
-    async def get_emails_content(self, email_ids: list[str], mailbox: str = "INBOX") -> EmailContentBatchResponse:
+    async def get_emails_content(
+        self, email_ids: list[str], mailbox: str = "INBOX", mark_as_read: bool = False
+    ) -> EmailContentBatchResponse:
         """Batch retrieve email body content"""
         emails = []
         failed_ids = []
 
         for email_id in email_ids:
             try:
-                email_data = await self.incoming_client.get_email_body_by_id(email_id, mailbox)
+                email_data = await self.incoming_client.get_email_body_by_id(email_id, mailbox, mark_as_read)
                 if email_data:
                     emails.append(
                         EmailBodyResponse(
@@ -1261,6 +1304,10 @@ class ClassicEmailHandler(EmailHandler):
     async def delete_emails(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
         """Delete emails by their UIDs. Returns (deleted_ids, failed_ids)."""
         return await self.incoming_client.delete_emails(email_ids, mailbox)
+
+    async def mark_emails_as_read(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
+        """Mark emails as read by their UIDs. Returns (marked_ids, failed_ids)."""
+        return await self.incoming_client.mark_emails_as_read(email_ids, mailbox)
 
     async def move_emails(
         self, email_ids: list[str], source_mailbox: str, destination_mailbox: str

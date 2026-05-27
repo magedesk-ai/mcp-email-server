@@ -86,7 +86,7 @@ You can also configure the email server using environment variables, which is pa
 
 ### Read-only IMAP mode
 
-SMTP configuration is optional. When `MCP_EMAIL_SERVER_SMTP_HOST` is omitted, the account runs in read-only mode and exposes only read/mailbox-management tools. Outbound compose tools such as `send_email` and `save_to_mailbox` are hidden when every configured email account is read-only.
+SMTP configuration is optional. When `MCP_EMAIL_SERVER_SMTP_HOST` is omitted, the account runs in read-only mode and exposes only read/mailbox-management tools. Compose-to-mailbox tools such as `save_to_mailbox` are hidden when every configured email account is read-only.
 
 ```json
 {
@@ -282,34 +282,6 @@ To install Email Server for Claude Desktop automatically via [Smithery](https://
 ```bash
 npx -y @smithery/cli install @ai-zerolab/mcp-email-server --client claude
 ```
-
-## Usage
-
-### Replying to Emails
-
-To reply to an email with proper threading (so it appears in the same conversation in email clients):
-
-1. First, fetch the original email to get its `message_id`:
-
-```python
-emails = await get_emails_content(account_name="work", email_ids=["123"])
-original = emails.emails[0]
-```
-
-2. Send your reply using `in_reply_to` and `references`:
-
-```python
-await send_email(
-    account_name="work",
-    recipients=[original.sender],
-    subject=f"Re: {original.subject}",
-    body="Thank you for your email...",
-    in_reply_to=original.message_id,
-    references=original.message_id,
-)
-```
-
-The `in_reply_to` parameter sets the `In-Reply-To` header, and `references` sets the `References` header. Both are used by email clients to thread conversations properly.
 
 ## Development
 

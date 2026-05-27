@@ -164,68 +164,8 @@ async def get_emails_content(
 
 
 @mcp.tool(
-    description="Send an email using the specified account. Supports replying to emails with proper threading when in_reply_to is provided.",
-    visible_if=_has_send_capable_account,
-)
-async def send_email(
-    account_name: Annotated[str, Field(description="The name of the email account to send from.")],
-    recipients: Annotated[list[str], Field(description="A list of recipient email addresses.")],
-    subject: Annotated[str, Field(description="The subject of the email.")],
-    body: Annotated[str, Field(description="The body of the email.")],
-    cc: Annotated[
-        list[str] | None,
-        Field(default=None, description="A list of CC email addresses."),
-    ] = None,
-    bcc: Annotated[
-        list[str] | None,
-        Field(default=None, description="A list of BCC email addresses."),
-    ] = None,
-    html: Annotated[
-        bool,
-        Field(default=False, description="Whether to send the email as HTML (True) or plain text (False)."),
-    ] = False,
-    attachments: Annotated[
-        list[str] | None,
-        Field(
-            default=None,
-            description="A list of absolute file paths to attach to the email. Supports common file types (documents, images, archives, etc.).",
-        ),
-    ] = None,
-    in_reply_to: Annotated[
-        str | None,
-        Field(
-            default=None,
-            description="Message-ID of the email being replied to. Enables proper threading in email clients.",
-        ),
-    ] = None,
-    references: Annotated[
-        str | None,
-        Field(
-            default=None,
-            description="Space-separated Message-IDs for the thread chain. Usually includes in_reply_to plus ancestors.",
-        ),
-    ] = None,
-) -> str:
-    handler = dispatch_handler(account_name)
-    await handler.send_email(
-        recipients,
-        subject,
-        body,
-        cc,
-        bcc,
-        html,
-        attachments,
-        in_reply_to,
-        references,
-    )
-    recipient_str = ", ".join(recipients)
-    attachment_info = f" with {len(attachments)} attachment(s)" if attachments else ""
-    return f"Email sent successfully to {recipient_str}{attachment_info}"
-
-
-@mcp.tool(
     description="Compose an email and save it to an IMAP folder (e.g., Drafts). "
-    "Same parameters as send_email, but saves instead of sending. "
+    "Saves instead of sending. "
     "Default folder is Drafts with \\Draft and \\Seen flags.",
     visible_if=_has_send_capable_account,
 )
@@ -301,26 +241,6 @@ async def save_to_mailbox(
     message_id = parts[0]
     email_id = parts[1] if len(parts) > 1 else "unknown"
     return f"Email saved to '{mailbox}' successfully. Message-Id: {message_id}, email_id: {email_id}"
-
-
-@mcp.tool(
-    description="Delete one or more emails by their email_id. Use list_emails_metadata first to get the email_id."
-)
-async def delete_emails(
-    account_name: Annotated[str, Field(description="The name of the email account.")],
-    email_ids: Annotated[
-        list[str],
-        Field(description="List of email_id to delete (obtained from list_emails_metadata)."),
-    ],
-    mailbox: Annotated[str, Field(default="INBOX", description="The mailbox to delete emails from.")] = "INBOX",
-) -> str:
-    handler = dispatch_handler(account_name)
-    deleted_ids, failed_ids = await handler.delete_emails(email_ids, mailbox)
-
-    result = f"Successfully deleted {len(deleted_ids)} email(s)"
-    if failed_ids:
-        result += f", failed to delete {len(failed_ids)} email(s): {', '.join(failed_ids)}"
-    return result
 
 
 @mcp.tool(

@@ -167,7 +167,7 @@ class EmailSettings(AccountAttributes):
         - MCP_EMAIL_SERVER_IMAP_SSL (default: true)
         - MCP_EMAIL_SERVER_IMAP_START_SSL (default: false)
         - MCP_EMAIL_SERVER_IMAP_VERIFY_SSL (default: true)
-        - MCP_EMAIL_SERVER_SMTP_HOST (optional; enables send_email)
+        - MCP_EMAIL_SERVER_SMTP_HOST (optional; enables compose-to-mailbox tools)
         - MCP_EMAIL_SERVER_SMTP_PORT (default: 465)
         - MCP_EMAIL_SERVER_SMTP_SSL (default: true)
         - MCP_EMAIL_SERVER_SMTP_START_SSL (default: false)

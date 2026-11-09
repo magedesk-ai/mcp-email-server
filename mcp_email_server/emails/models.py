@@ -59,8 +59,16 @@ class MailboxInfo(BaseModel):
     """IMAP mailbox/folder information"""
 
     name: str
-    delimiter: str
+    delimiter: str | None
     flags: list[str]
+
+
+class DraftSaveResponse(BaseModel):
+    """Location and identifiers of a saved, unsent draft."""
+
+    mailbox: str
+    email_id: str | None  # None when the server does not return APPENDUID
+    message_id: str
 
 
 class AttachmentDownloadResponse(BaseModel):

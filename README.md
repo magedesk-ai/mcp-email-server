@@ -9,6 +9,9 @@
 
 IMAP and SMTP via MCP Server
 
+- Save finished replies as unsent drafts with `save_draft` via IMAP APPEND, including automatic Drafts-folder detection and reply-thread headers.
+- Discover actual mailbox names and special-use flags with `list_mailboxes`, including quoted and unquoted folder names.
+
 - **Github repository**: <https://github.com/ai-zerolab/mcp-email-server/>
 - **Documentation** <https://ai-zerolab.github.io/mcp-email-server/>
 
@@ -86,7 +89,28 @@ You can also configure the email server using environment variables, which is pa
 
 ### Read-only IMAP mode
 
-SMTP configuration is optional. When `MCP_EMAIL_SERVER_SMTP_HOST` is omitted, the account runs in read-only mode and exposes only read/mailbox-management tools. Compose-to-mailbox tools such as `save_to_mailbox` are hidden when every configured email account is read-only.
+SMTP configuration is optional. When `MCP_EMAIL_SERVER_SMTP_HOST` is omitted, the account exposes read/mailbox-management tools and `save_draft`. The generic `save_to_mailbox` tool remains hidden when every configured email account has no SMTP configuration. `save_draft` requires only IMAP and never sends an email.
+
+### Save a reply draft
+
+Use `list_emails_metadata` to obtain the original email's `email_id` (IMAP UID), then call:
+
+```json
+{
+  "account_name": "personal",
+  "recipients": ["sender@example.com"],
+  "subject": "Re: Original subject",
+  "body": "The finished reply text.",
+  "original_email_id": "123",
+  "original_mailbox": "INBOX"
+}
+```
+
+`save_draft` sets `In-Reply-To` to the original Message-ID and extends its `References` chain, falling back to the parent's `In-Reply-To` when no References header exists. The original is retrieved without marking it as read or answered. If it cannot be retrieved or has no Message-ID, saving fails before APPEND.
+
+The target folder is detected by the `\Drafts` special-use flag, with a fallback to an existing, unambiguous Drafts/Draft/Entwürfe folder. For other names or ambiguous folders, supply `mailbox` using the exact name from `list_mailboxes`. No folder is created automatically. Drafts receive `\Draft` and `\Seen` flags. Optional `cc`, `bcc`, `html` and `attachments` work like `save_to_mailbox`; Bcc is preserved in the saved copy. Omit `original_email_id` to save a new message without reply headers.
+
+The result contains `mailbox`, `message_id`, and `email_id` (the new IMAP UID, or `null` if the server does not return APPENDUID).
 
 ```json
 {

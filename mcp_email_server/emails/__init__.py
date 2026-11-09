@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from mcp_email_server.emails.models import (
         AttachmentDownloadResponse,
+        DraftSaveResponse,
         EmailContentBatchResponse,
         EmailMetadataPageResponse,
         MailboxInfo,
@@ -98,6 +99,22 @@ class EmailHandler(abc.ABC):
         flags: list[str] | None = None,
     ) -> str:
         """Compose an email and save it to the specified IMAP folder via APPEND."""
+
+    @abc.abstractmethod
+    async def save_draft(
+        self,
+        recipients: list[str],
+        subject: str,
+        body: str,
+        original_email_id: str | None = None,
+        original_mailbox: str = "INBOX",
+        mailbox: str | None = None,
+        cc: list[str] | None = None,
+        bcc: list[str] | None = None,
+        html: bool = False,
+        attachments: list[str] | None = None,
+    ) -> "DraftSaveResponse":
+        """Save an unsent draft via IMAP, inheriting the original email's thread."""
 
     @abc.abstractmethod
     async def delete_emails(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:

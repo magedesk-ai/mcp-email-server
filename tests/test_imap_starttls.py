@@ -193,7 +193,7 @@ async def test_append_to_mailbox_uses_incoming_starttls_path():
 
     with patch("mcp_email_server.emails.classic.aioimaplib.IMAP4", return_value=mock_imap):
         with patch("mcp_email_server.emails.classic._imap_starttls", new=AsyncMock()) as mock_starttls:
-            result = await client.append_to_mailbox(MagicMock(as_bytes=lambda: b"message"), incoming, "Drafts")
+            result = await client.append_to_mailbox(MagicMock(as_bytes=lambda **kwargs: b"message"), incoming, "Drafts")
 
     assert result == "unknown"
     mock_starttls.assert_awaited_once()

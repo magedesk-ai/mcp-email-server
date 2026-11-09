@@ -23,6 +23,7 @@ from mcp_email_server.config import EmailServer, EmailSettings
 from mcp_email_server.emails import EmailHandler
 from mcp_email_server.emails.models import (
     AttachmentDownloadResponse,
+    DraftSaveResponse,
     EmailBodyResponse,
     EmailContentBatchResponse,
     EmailMetadata,
@@ -75,6 +76,47 @@ def _uid_sort_key(uid: bytes | str) -> int:
     """Return a numeric sort key for IMAP UIDs."""
     value = uid.decode() if isinstance(uid, bytes) else uid
     return int(value)
+
+
+_LIST_RESPONSE = re.compile(
+    r'^(?:\((?P<flags>[^)]*)\)\s+)?(?P<delimiter>NIL|"(?:[^"\\]|\\.)*")\s+'
+    r'(?:(?P<name>"(?:[^"\\]|\\.)*"|[^\s"{][^\r\n]*)|\{(?P<literal_size>\d+)\})\s*$',
+    re.IGNORECASE,
+)
+
+
+def _parse_mailbox_list(lines: list[bytes | bytearray | str]) -> list[MailboxInfo]:
+    """Parse LIST flags, delimiter and mailbox (quoted, atom or literal)."""
+    mailboxes = []
+    response_lines = iter(lines)
+    for line in response_lines:
+        value = line.decode("utf-8") if isinstance(line, bytes | bytearray) else str(line)
+        match = _LIST_RESPONSE.fullmatch(value)
+        if not match:
+            continue  # Empty lines and the tagged LIST completion are not mailboxes.
+
+        def unquote(token: str) -> str:
+            return re.sub(r'\\(["\\])', r"\1", token[1:-1]) if token.startswith('"') else token
+
+        if match["literal_size"] is not None:
+            # aioimaplib stores literal data as a separate bytearray entry.
+            literal = next(response_lines, b"")
+            raw_name = literal.encode("utf-8") if isinstance(literal, str) else literal
+            if len(raw_name) != int(match["literal_size"]):
+                continue
+            name = raw_name.decode("utf-8")
+        else:
+            name = unquote(match["name"])
+
+        delimiter = match["delimiter"]
+        mailboxes.append(
+            MailboxInfo(
+                name=name,
+                delimiter=None if delimiter.upper() == "NIL" else unquote(delimiter),
+                flags=(match["flags"] or "").split(),
+            )
+        )
+    return mailboxes
 
 
 def _imap_status(response: Any) -> str:
@@ -429,6 +471,8 @@ class EmailClient:
         return {
             "email_id": email_id or "",
             "message_id": message_id,
+            "references": email_message.get("References"),
+            "in_reply_to": email_message.get("In-Reply-To"),
             "subject": subject,
             "from": sender,
             "to": to_addresses,
@@ -1070,21 +1114,12 @@ class EmailClient:
         """
         try:
             # List all folders - aioimaplib requires reference_name and mailbox_pattern
-            _, folders = await imap.list('""', "*")
-
-            # Search for folder with \Sent flag
-            for folder in folders:
-                folder_str = folder.decode("utf-8") if isinstance(folder, bytes) else str(folder)
-                # IMAP LIST response format: (flags) "delimiter" "name"
-                # Example: (\Sent \HasNoChildren) "/" "Gesendete Objekte"
-                if r"\Sent" in folder_str or "\\Sent" in folder_str:
-                    # Extract folder name from the response
-                    # Split by quotes and get the last quoted part
-                    parts = folder_str.split('"')
-                    if len(parts) >= 3:
-                        folder_name = parts[-2]  # The folder name is the second-to-last quoted part
-                        logger.info(f"Found Sent folder by \\Sent flag: '{folder_name}'")
-                        return folder_name
+            response = await imap.list('""', "*")
+            _raise_for_imap_error(response, "LIST Sent folder")
+            for folder in _parse_mailbox_list(response[1]):
+                if r"\sent" in {flag.lower() for flag in folder.flags}:
+                    logger.info(f"Found Sent folder by \\Sent flag: '{folder.name}'")
+                    return folder.name
         except Exception as e:
             logger.debug(f"Error finding Sent folder by flag: {e}")
 
@@ -1204,7 +1239,7 @@ class EmailClient:
                 logger.warning(f"Mailbox '{mailbox}' not found or not selectable: {status}")
                 return None
 
-            msg_bytes = msg.as_bytes()
+            msg_bytes = msg.as_bytes(policy=msg.policy.clone(linesep="\r\n"))
             append_result = await imap.append(
                 msg_bytes,
                 mailbox=_quote_mailbox(mailbox),
@@ -1357,20 +1392,7 @@ class EmailClient:
             _raise_for_imap_error(response, f"LIST mailboxes with pattern {pattern}")
             _, data = response
 
-            for item in data:
-                if item == b"":
-                    continue
-                item_str = item.decode("utf-8") if isinstance(item, bytes) else str(item)
-                flags = []
-                if "(" in item_str and ")" in item_str:
-                    flags_str = item_str[item_str.index("(") + 1 : item_str.index(")")]
-                    flags = [f.strip() for f in flags_str.split() if f.strip()]
-
-                parts = item_str.split('"')
-                if len(parts) >= 3:
-                    delimiter = parts[1]
-                    folder_name = parts[-2]
-                    mailboxes.append(MailboxInfo(name=folder_name, delimiter=delimiter, flags=flags))
+            mailboxes = _parse_mailbox_list(data)
         finally:
             try:
                 await imap.logout()
@@ -1383,7 +1405,9 @@ class EmailClient:
 class ClassicEmailHandler(EmailHandler):
     def __init__(self, email_settings: EmailSettings):
         self.email_settings = email_settings
-        self.incoming_client = EmailClient(email_settings.incoming)
+        self.incoming_client = EmailClient(
+            email_settings.incoming, sender=f"{email_settings.full_name} <{email_settings.email_address}>"
+        )
         self.outgoing_client = (
             EmailClient(
                 email_settings.outgoing,
@@ -1558,6 +1582,71 @@ class ClassicEmailHandler(EmailHandler):
 
         message_id = msg["Message-Id"] or "saved"
         return f"{message_id}|uid:{uid}"
+
+    async def save_draft(
+        self,
+        recipients: list[str],
+        subject: str,
+        body: str,
+        original_email_id: str | None = None,
+        original_mailbox: str = "INBOX",
+        mailbox: str | None = None,
+        cc: list[str] | None = None,
+        bcc: list[str] | None = None,
+        html: bool = False,
+        attachments: list[str] | None = None,
+    ) -> DraftSaveResponse:
+        """Save a draft without SMTP; derive RFC 5322 reply headers from its parent.
+
+        An explicit mailbox overrides discovery. Otherwise prefer SPECIAL-USE
+        \\Drafts and fall back only to an existing, unambiguous conventional name.
+        """
+        in_reply_to = references = None
+        if original_email_id is not None:
+            original = await self.incoming_client.get_email_body_by_id(original_email_id, original_mailbox, False)
+            if not original or not original.get("message_id"):
+                raise ValueError("Original email not found or missing Message-ID; cannot link reply draft")
+            in_reply_to = str(original["message_id"]).strip()
+            chain = original.get("references") or original.get("in_reply_to") or ""
+            # Unfold the parent header before writing a new MIME header.
+            references = " ".join(str(chain).split())
+            references = f"{references} {in_reply_to}".strip()
+
+        if mailbox is None:
+            folders = await self.incoming_client.list_mailboxes()
+            selectable = [f for f in folders if r"\noselect" not in {flag.lower() for flag in f.flags}]
+            candidates = [f.name for f in selectable if r"\drafts" in {flag.lower() for flag in f.flags}]
+            if not candidates:
+                names = {"drafts", "draft", "entwürfe", "entw&apw-rfe"}
+                candidates = [
+                    f.name
+                    for f in selectable
+                    if (f.name.rsplit(f.delimiter, 1)[-1] if f.delimiter else f.name).lower() in names
+                ]
+            if len(candidates) != 1:
+                raise ValueError("Cannot identify a unique Drafts folder; specify mailbox from list_mailboxes")
+            mailbox = candidates[0]
+
+        msg = self.incoming_client.compose_message(
+            recipients,
+            subject,
+            body,
+            cc,
+            bcc,
+            html,
+            attachments,
+            in_reply_to,
+            references,
+            include_bcc_header=True,
+        )
+        uid = await self.incoming_client.append_to_mailbox(
+            msg, self.email_settings.incoming, mailbox, r"(\Draft \Seen)"
+        )
+        if uid is None:
+            raise RuntimeError(f"Failed to save draft to mailbox '{mailbox}'")
+        return DraftSaveResponse(
+            mailbox=mailbox, email_id=None if uid == "unknown" else uid, message_id=msg["Message-Id"]
+        )
 
     async def delete_emails(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
         """Delete emails by their UIDs. Returns (deleted_ids, failed_ids)."""

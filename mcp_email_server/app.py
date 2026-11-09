@@ -14,6 +14,7 @@ from mcp_email_server.config import (
 from mcp_email_server.emails.dispatcher import dispatch_handler
 from mcp_email_server.emails.models import (
     AttachmentDownloadResponse,
+    DraftSaveResponse,
     EmailContentBatchResponse,
     EmailMetadataPageResponse,
     MailboxInfo,
@@ -241,6 +242,35 @@ async def save_to_mailbox(
     message_id = parts[0]
     email_id = parts[1] if len(parts) > 1 else "unknown"
     return f"Email saved to '{mailbox}' successfully. Message-Id: {message_id}, email_id: {email_id}"
+
+
+@mcp.tool(
+    description="Save an unsent email draft via IMAP APPEND (no SMTP required). "
+    "Automatically detects the Drafts folder. For a reply, supply original_email_id "
+    "(IMAP UID) and original_mailbox to inherit In-Reply-To and References from the original email.",
+)
+async def save_draft(
+    account_name: Annotated[str, Field(description="The name of the email account.")],
+    recipients: Annotated[list[str], Field(description="Recipient email addresses.")],
+    subject: Annotated[str, Field(description="Draft subject; use the original reply subject for replies.")],
+    body: Annotated[str, Field(description="The finished reply or new email body.")],
+    original_email_id: Annotated[
+        str | None, Field(description="IMAP UID of the original email from list_emails_metadata; not its Message-ID.")
+    ] = None,
+    original_mailbox: Annotated[str, Field(description="Mailbox containing the original email.")] = "INBOX",
+    mailbox: Annotated[
+        str | None,
+        Field(description="Override Drafts folder using its exact name from list_mailboxes; auto-detect if omitted."),
+    ] = None,
+    cc: list[str] | None = None,
+    bcc: list[str] | None = None,
+    html: bool = False,
+    attachments: Annotated[list[str] | None, Field(description="Absolute paths of files to attach.")] = None,
+) -> DraftSaveResponse:
+    handler = dispatch_handler(account_name)
+    return await handler.save_draft(
+        recipients, subject, body, original_email_id, original_mailbox, mailbox, cc, bcc, html, attachments
+    )
 
 
 @mcp.tool(
